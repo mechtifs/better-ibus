@@ -1,0 +1,14 @@
+{
+  "description": "Some QoL improvements to IBus.",
+  "name": "Better IBus",
+  "shell-version": [
+    "45",
+    "46",
+    "47"
+  ],
+  "url": "https://github.com/mechtifs/better-ibus",
+  "uuid": "better-ibus@mechtifs",
+  "settings-schema": "org.gnome.shell.extensions.better-ibus",
+  "gettext-domain": "gnome-shell-extension-better-ibus",
+  "version": 1
+}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="gnome-shell-extension-better-ibus">
+  <schema id="org.gnome.shell.extensions.better-ibus" path="/org/gnome/shell/extensions/better-ibus/">
+    <key name="auto-switch" type="b">
+      <default>true</default>
+    </key>
+    <key name="show-hint" type="b">
+      <default>true</default>
+    </key>
+    <key name="hint-duration" type="i">
+      <default>1000</default>
+    </key>
+  </schema>
+</schemalist>
