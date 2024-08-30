@@ -35,7 +35,7 @@ class Indicator extends BoxPointer.BoxPointer {
         this.visible = false;
         this._dummyCursor = new Clutter.Actor();
         Main.layoutManager.uiGroup.add_child(this._dummyCursor);
-        Main.layoutManager.uiGroup.add_child(this);
+        Main.layoutManager.addTopChrome(this);
         const box = new St.BoxLayout({
             style_class: 'candidate-popup-content',
         });
@@ -46,18 +46,23 @@ class Indicator extends BoxPointer.BoxPointer {
         box.add_child(this._inputIndicatorLabel);
     }
 
+    removeIndicator() {
+        if (!this._timeoutId) {
+            return;
+        }
+        GLib.Source.remove(this._timeoutId);
+        this._timeoutId = null;
+        this.close(BoxPointer.PopupAnimation.NONE);
+    }
+
     showIndicator(text) {
         this._inputIndicatorLabel.text = text;
-        if (this._timeout) {
-            GLib.source_remove(this._timeout);
-            this._timeout = null;
-            this.close(BoxPointer.PopupAnimation.NONE);
-        }
+        this.removeIndicator();
         this.open(BoxPointer.PopupAnimation.FULL);
-        this._timeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this.hintDuration, () => {
+        this._timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this.hintDuration, () => {
             this.close(BoxPointer.PopupAnimation.FULL);
-            this._timeout = null;
-            return false;
+            this._timeoutId = null;
+            return GLib.SOURCE_REMOVE;
         });
     }
 
@@ -66,6 +71,13 @@ class Indicator extends BoxPointer.BoxPointer {
         this._dummyCursor.set_size(geometry.w, geometry.h);
         this.setPosition(this._dummyCursor, 0);
         this.get_parent().set_child_below_sibling(this, Main.layoutManager.keyboardBox);
+    }
+
+    _onDestroy() {
+        this.removeIndicator();
+        Main.layoutManager.removeChrome(this);
+        Main.layoutManager.uiGroup.remove_child(this._dummyCursor);
+        super._onDestroy();
     }
 }
 
@@ -87,27 +99,34 @@ export default class HasslelessOverviewSearchExtension extends Extension {
     }
 
     _toggleAutoSwitch(enabled) {
-        Main.overview.disconnectObject(this);
         if (!enabled) {
+            Main.overview.disconnectObject(this);
             return;
         }
         Main.overview.connectObject(
             'showing', () => {
                 this._prevSource = this._inputSourceManager.currentSource.index;
                 this._inputSourceManager.inputSources[0].activate();
+                this._indicator.removeIndicator();
             },
             'hiding', () => {
                 this._inputSourceManager.inputSources[this._prevSource].activate();
+                this._indicator.removeIndicator();
             },
             this
         );
     }
 
     _toggleShowHint(enabled) {
-        this._panelService.disconnectObject(this);
         if (!enabled) {
+            this._panelService.disconnectObject(this);
+            if (this._indicator) {
+                this._indicator.destroy();
+                this._indicator = null;
+            }
             return;
         }
+        this._indicator = new Indicator();
         this._panelService.connectObject(
             'set-cursor-location', (_, x, y, w, h) => {
                 this._cursorLocationChangeTime = GLib.get_monotonic_time();
@@ -124,16 +143,18 @@ export default class HasslelessOverviewSearchExtension extends Extension {
                 this._checkHasUnfocusedOnce();
             },
             'focus-in', () => {
-                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => {
+                this._focusTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => {
                     if (Math.abs(GLib.get_monotonic_time() - this._cursorLocationChangeTime) < 20000 && this._checkValidity(this._geometry)) {
                         this._indicator.updateGeometry(this._lastKnownValidGeometry);
                         if (!this._hasUnfocusedOnce) {
-                            return;
+                            this._focusTimeoutId = null;
+                            return GLib.SOURCE_REMOVE;
                         }
                         this._hasUnfocusedOnce = false;
                         this._showSourceIndicator();
+                        this._focusTimeoutId = null;
                     }
-                    return false;
+                    return GLib.SOURCE_REMOVE;
                 });
             },
             this
@@ -155,9 +176,15 @@ export default class HasslelessOverviewSearchExtension extends Extension {
     }
 
     disable() {
-        this._panelService.disconnectObject(this);
         Main.overview.disconnectObject(this);
-        this._indicator = null;
+        this._panelService.disconnectObject(this);
+        if (this._indicator) {
+            this._indicator.destroy();
+            this._indicator = null;
+        }
+        if (this._focusTimeoutId) {
+            GLib.Source.remove(this._focusTimeoutId);
+        }
         this._panelService = null;
         this._inputSourceManager = null;
         this._settings = null;
