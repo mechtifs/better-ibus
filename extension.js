@@ -12,16 +12,30 @@ import { getInputSourceManager } from 'resource:///org/gnome/shell/ui/status/key
 
 const initSettings = (settings, entries) => {
     const getPrefValue = (name, type) => ({
-        'b': () => settings.get_boolean(name),
-        'd': () => settings.get_double(name),
-        'i': () => settings.get_int(name),
-        's': () => settings.get_string(name),
+        b: () => settings.get_boolean(name),
+        d: () => settings.get_double(name),
+        i: () => settings.get_int(name),
+        s: () => settings.get_string(name),
     }[type]());
     entries.forEach(([name, type, func]) => {
         func(getPrefValue(name, type));
         settings.connect(`changed::${name}`, () => func(getPrefValue(name, type)));
     });
 };
+
+class Geometry {
+    constructor(x, y, w, h) {
+        Object.assign(this, {x, y, w, h});
+    }
+
+    get isValid() {
+        return this.x || this.y || this.w || this.h;
+    }
+
+    equals(other) {
+        return this.x === other.x && this.y === other.y && this.w === other.w && this.h === other.h;
+    }
+}
 
 class Indicator extends BoxPointer.BoxPointer {
     static {
@@ -40,24 +54,17 @@ class Indicator extends BoxPointer.BoxPointer {
             style_class: 'candidate-popup-content',
         });
         this.bin.set_child(box);
-        this._inputIndicatorLabel = new St.Label({
+        this._label = new St.Label({
             style_class: 'candidate-popup-text',
         });
-        box.add_child(this._inputIndicatorLabel);
+        box.add_child(this._label);
     }
 
-    removeIndicator() {
-        if (!this._timeoutId) {
+    animate(text) {
+        this._label.text = text;
+        if (this._timeoutId) {
             return;
         }
-        GLib.Source.remove(this._timeoutId);
-        this._timeoutId = null;
-        this.close(BoxPointer.PopupAnimation.NONE);
-    }
-
-    showIndicator(text) {
-        this._inputIndicatorLabel.text = text;
-        this.removeIndicator();
         this.open(BoxPointer.PopupAnimation.FULL);
         this._timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this.hintDuration, () => {
             this.close(BoxPointer.PopupAnimation.FULL);
@@ -66,36 +73,40 @@ class Indicator extends BoxPointer.BoxPointer {
         });
     }
 
-    updateGeometry(geometry) {
-        this._dummyCursor.set_position(geometry.x, geometry.y);
-        this._dummyCursor.set_size(geometry.w, geometry.h);
-        this.setPosition(this._dummyCursor, 0);
-        this.get_parent().set_child_below_sibling(this, Main.layoutManager.keyboardBox);
+    disrupt() {
+        if (!this._timeoutId) {
+            return;
+        }
+        GLib.source_remove(this._timeoutId);
+        this._timeoutId = null;
+        this.close(BoxPointer.PopupAnimation.NONE);
     }
 
-    _onDestroy() {
-        this.removeIndicator();
+    setGeometry(g) {
+        this._dummyCursor.set_position(g.x, g.y);
+        this._dummyCursor.set_size(g.w, g.h);
+        this.setPosition(this._dummyCursor, 0);
+        this.get_parent()?.set_child_below_sibling(this, Main.layoutManager.keyboardBox);
+    }
+
+    destroy() {
+        this.disrupt();
         Main.layoutManager.removeChrome(this);
         Main.layoutManager.uiGroup.remove_child(this._dummyCursor);
-        super._onDestroy();
+        super.destroy();
     }
 }
 
-export default class HasslelessOverviewSearchExtension extends Extension {
-    _checkValidity(geometry) {
-        return Object.values(geometry).reduce((a, b) => a | b);
+export default class BetterIBusExtension extends Extension {
+    _checkGeometry(g) {
+        return g.isValid && !g.equals(this._lastGeometry);
     }
 
-    _showSourceIndicator() {
-        this._indicator.showIndicator(Main.panel.statusArea.keyboard._indicatorLabels[this._inputSourceManager.currentSource.index].get_text());
-    }
-
-    _checkHasUnfocusedOnce() {
-        const isValid = this._checkValidity(this._geometry);
-        if (isValid) {
-            this._lastKnownValidGeometry = this._geometry;
-        }
-        this._hasUnfocusedOnce |= !isValid;
+    _showIndicator(g) {
+        this._indicator.disrupt();
+        this._indicator.setGeometry(g);
+        this._indicator.animate(Main.panel.statusArea.keyboard._indicatorLabels[this._inputSourceManager.currentSource.index].get_text())
+        this._lastGeometry = g;
     }
 
     _toggleAutoSwitch(enabled) {
@@ -107,11 +118,11 @@ export default class HasslelessOverviewSearchExtension extends Extension {
             'showing', () => {
                 this._prevSource = this._inputSourceManager.currentSource.index;
                 this._inputSourceManager.inputSources[0].activate();
-                this._indicator.removeIndicator();
+                this._indicator.disrupt();
             },
             'hiding', () => {
-                this._inputSourceManager.inputSources[this._prevSource].activate();
-                this._indicator.removeIndicator();
+                this._inputSourceManager.inputSources[this._prevSource ?? 0].activate();
+                this._indicator.disrupt();
             },
             this
         );
@@ -120,40 +131,65 @@ export default class HasslelessOverviewSearchExtension extends Extension {
     _toggleShowHint(enabled) {
         if (!enabled) {
             this._panelService.disconnectObject(this);
-            if (this._indicator) {
-                this._indicator.destroy();
-                this._indicator = null;
+            this._inputSourceManager.disconnectObject(this);
+            global.display.disconnectObject(this);
+            this._indicator?.destroy();
+            this._indicator = null;
+            if (this._focusTimeoutId) {
+                GLib.source_remove(this._focusTimeoutId);
+                this._focusTimeoutId = null;
             }
             return;
         }
         this._indicator = new Indicator();
         this._panelService.connectObject(
             'set-cursor-location', (_, x, y, w, h) => {
-                this._cursorLocationChangeTime = GLib.get_monotonic_time();
-                this._geometry = { x, y, w, h };
-                this._checkHasUnfocusedOnce();
+                this._geometry = new Geometry(x, y, w, h);
+                if (this._notYetFocused && this._checkGeometry(this._geometry)) {
+                    this._notYetFocused = false;
+                    this._showIndicator(this._geometry);
+                }
             },
-            "set-cursor-location-relative", (_, x, y, w, h) => {
-                if (!global.display.focus_window) {
+            'set-cursor-location-relative', (_, x, y, w, h) => {
+                const wActor = global.display.focus_window?.get_compositor_private();
+                if (!wActor) {
                     return;
                 }
-                const window = global.display.focus_window.get_compositor_private();
-                this._cursorLocationChangeTime = GLib.get_monotonic_time();
-                this._geometry = { x: window.x+x, y: window.y+y, w, h };
-                this._checkHasUnfocusedOnce();
+                this._geometry = new Geometry(wActor.x + x, wActor.y + y, w, h);
+                if (this._notYetFocused && this._checkGeometry(this._geometry)) {
+                    this._notYetFocused = false;
+                    this._showIndicator(this._geometry);
+                }
             },
-            'focus-in', () => {
-                this._focusTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => {
-                    if (Math.abs(GLib.get_monotonic_time() - this._cursorLocationChangeTime) < 20000 && this._checkValidity(this._geometry)) {
-                        this._indicator.updateGeometry(this._lastKnownValidGeometry);
-                        if (!this._hasUnfocusedOnce) {
-                            this._focusTimeoutId = null;
-                            return GLib.SOURCE_REMOVE;
+            this
+        );
+        this._inputSourceManager.connectObject(
+            'current-source-changed', () => {
+                if (this._geometry.isValid) {
+                    this._showIndicator(this._geometry);
+                }
+            },
+            this
+        );
+        global.display.connectObject(
+            'notify::focus-window', () => {
+                if (this._focusTimeoutId) {
+                    return;
+                }
+                this._focusTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+                    (() => {
+                        const w = global.display.focus_window?.get_id();
+                        if (w && w === this._lastWindowId) {
+                            return;
                         }
-                        this._hasUnfocusedOnce = false;
-                        this._showSourceIndicator();
-                        this._focusTimeoutId = null;
-                    }
+                        this._lastWindowId = w;
+                        if (!this._checkGeometry(this._geometry)) {
+                            this._notYetFocused = true;
+                            return;
+                        }
+                        this._showIndicator(this._geometry);
+                    })();
+                    this._focusTimeoutId = null;
                     return GLib.SOURCE_REMOVE;
                 });
             },
@@ -162,28 +198,31 @@ export default class HasslelessOverviewSearchExtension extends Extension {
     }
 
     enable() {
+        this._geometry = new Geometry(0, 0, 0, 0);
+        this._lastGeometry = new Geometry(0, 0, 0, 0);
         this._indicator = new Indicator();
-        this._hasUnfocusedOnce = true;
         this._panelService = getIBusManager()._panelService;
         this._inputSourceManager = getInputSourceManager();
         this._settings = this.getSettings();
         initSettings(this._settings, [
             ['auto-switch', 'b', (v) => this._toggleAutoSwitch(v)],
             ['show-hint', 'b', (v) => this._toggleShowHint(v)],
-            ['hint-duration', 'i', (v) => {this._indicator.hintDuration = v}],
-        ])
-
+            ['hint-duration', 'i', (v) => { this._indicator.hintDuration = v; }],
+        ]);
     }
 
     disable() {
         Main.overview.disconnectObject(this);
         this._panelService.disconnectObject(this);
-        if (this._indicator) {
-            this._indicator.destroy();
-            this._indicator = null;
-        }
+        this._inputSourceManager.disconnectObject(this);
+        global.display.disconnectObject(this);
+        this._geometry = null;
+        this._lastGeometry = null;
+        this._indicator?.destroy();
+        this._indicator = null;
         if (this._focusTimeoutId) {
-            GLib.Source.remove(this._focusTimeoutId);
+            GLib.source_remove(this._focusTimeoutId);
+            this._focusTimeoutId = null;
         }
         this._panelService = null;
         this._inputSourceManager = null;

@@ -6,7 +6,7 @@ import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 import { ExtensionPreferences, gettext } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-const _ = (text) => (text === null ? null : gettext(text));
+const _ = (text) => text && gettext(text);
 
 const nSpin = (title, subtitle, lower, upper, step_increment) => new Adw.SpinRow({
     title: _(title),
@@ -69,17 +69,17 @@ class PrefPage extends Adw.PreferencesPage {
 }
 
 export default class BetterIBusPreferences extends ExtensionPreferences {
-    fillPreferencesWindow(window) {
+    async fillPreferencesWindow(window) {
         window.set_title(gettext('Better IBus Preferences'));
         const _settings = this.getSettings();
 
         const _appearancePage = new PrefPage(null, null, [
             new PrefGroup('Overview', 'Configure IBus behavior in the overview.', [
-                ["auto-switch", nSwitch('Auto Switch', 'Temporarily switch to the primary input source when entering the overview.')],
+                ['auto-switch', nSwitch('Auto Switch', 'Temporarily switch to the primary input source when entering the overview.')],
             ]),
-            new PrefGroup('Input Source Hint', 'Configure the input source hint', [
-                ["show-hint", nSwitch('Show Hint', 'Enable the input source hint when focusing an input field and switching input sources.')],
-                ["hint-duration", nSpin('Hint Duration', 'Configure the duration of the hint popup.', 50, 5000, 1)],
+            new PrefGroup('Input Source Hint', 'Configure the behavior of the input source hint.', [
+                ['show-hint', nSwitch('Show Hint', 'Enable the input source hint when focusing an input field and switching input sources.')],
+                ['hint-duration', nSpin('Hint Duration', 'Configure the duration of the hint popup.', 50, 5000, 1)],
             ]),
         ]);
 
